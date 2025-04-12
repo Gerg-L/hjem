@@ -17,11 +17,11 @@
     description = "Hjem NixOS module";
     class = "hjem";
     specialArgs =
-      {
-        inherit pkgs lib;
+      cfg.specialArgs
+      // {
+        inherit pkgs;
         osConfig = config;
-      }
-      // cfg.specialArgs;
+      };
     modules = concatLists [
       [
         ({name, ...}: {
