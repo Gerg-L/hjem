@@ -1,7 +1,8 @@
-{
+linker: {
   config,
   pkgs,
   lib,
+  utils,
   ...
 }: let
   inherit (lib.modules) mkIf;
@@ -26,7 +27,7 @@
       };
     modules =
       [
-        ../common.nix
+        (import ../common.nix linker)
         ({name, ...}: let
           user = getAttr name config.users.users;
         in {
@@ -85,13 +86,30 @@ in {
         packages = mkIf (hasAttr name cfg.users) cfg.users.packages;
       }));
     };
+
+    useLinker = mkOption {
+      type = bool;
+      default = false;
+      example = true;
+      description = ''
+        Method to use to link files.
+        `false` will use `systemd-tmpfiles`, which is only supported on Linux.
+        This is the default file linker on Linux, as it is the more mature linker, but it has the downside of leaving
+        behind symlinks that may not get invalidated until the next GC, if an entry is removed from {option}`hjem.<user>.files`.
+        Specifying a package will use a custom file linker that uses an internally-generated manifest.
+        The custom file linker must use this manifest to create or remove links as needed, by comparing the
+        manifest of the currently activated system with that of the new system.
+        This prevents dangling symlinks when an entry is removed from {option}`hjem.<user>.files`.
+        This linker is currently experimental; once it matures, it may become the default in the future.
+      '';
+    };
   };
 
   config = {
     # Constructed rule string that consists of the type, target, and source
     # of a tmpfile. Files with 'null' sources are filtered before the rule
     # is constructed.
-    systemd.user.tmpfiles.users =
+    systemd.user.tmpfiles.users = mkIf (! cfg.useLinker) (
       mapAttrs (_: {
         enable,
         files,
@@ -111,8 +129,58 @@ in {
             ]
           );
       })
-      cfg.users;
+      cfg.users
+    );
 
+    # steal from: https://github.com/nix-community/home-manager/blob/master/nixos/default.nix
+    systemd.services =
+      lib.mapAttrs' (
+        _: user:
+          lib.nameValuePair "hjem-${utils.escapeSystemdPath user.user}" {
+            description = "hjem for ${user.user}";
+            wantedBy = ["multi-user.target"];
+            wants = ["nix-daemon.socket"];
+            after = ["nix-daemon.socket"];
+            before = ["systemd-user-sessions.service"];
+
+            unitConfig = {
+              RequiresMountsFor = user.directory;
+            };
+            stopIfChanged = false;
+            serviceConfig = {
+              User = user.user;
+              Type = "oneshot";
+              TimeoutStartSec = "5m";
+              SyslogIdentifier = "hjem-${utils.escapeSystemdPath user.user}";
+              execStart = let
+                exportedSystemdVariables = lib.concatStringsSep "|" [
+                  "DBUS_SESSION_BUS_ADDRESS"
+                  "DISPLAY"
+                  "WAYLAND_DISPLAY"
+                  "XAUTHORITY"
+                  "XDG_RUNTIME_DIR"
+                ];
+                packages = [pkgs.gnused];
+              in
+                pkgs.writeScript "hm-setup-env" ''
+                  #! ${pkgs.runtimeShell} -el
+                  export PATH=$PATH:${lib.makeBinPath packages}
+
+                  # The activation script is run by a login shell to make sure
+                  # that the user is given a sane environment.
+                  # If the user is logged in, import variables from their current
+                  # session environment.
+                  eval "$(
+                    XDG_RUNTIME_DIR=\''${XDG_RUNTIME_DIR:-/run/user/$UID} systemctl --user show-environment 2> /dev/null \
+                    | sed -En '/^(${exportedSystemdVariables})=/s/^/export /p'
+                  )"
+
+                  exec "${user.activationPackage}/activate"
+                '';
+            };
+          }
+      )
+      cfg.users;
     warnings =
       concatLists
       (mapAttrsToList (
@@ -138,4 +206,5 @@ in {
         config.assertions)
       cfg.users);
   };
+  _file = ./default.nix;
 }

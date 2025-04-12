@@ -2,7 +2,7 @@
 # somewhat compliant with cross-platform paradigms (e.g. NixOS or Darwin.) Platform
 # specific options such as nixpkgs module system or nix-darwin module system should
 # be avoided here.
-{
+linker: {
   config,
   pkgs,
   lib,
@@ -184,9 +184,46 @@ in {
         '';
       };
     };
+
+    activationPackage = mkOption {
+      type = package;
+      internal = true;
+      readOnly = true;
+    };
   };
 
   config = {
+    activationPackage = let
+      manifest = lib.pipe cfg.files [
+        builtins.attrValues
+        (builtins.filter (x: x.enable))
+        (builtins.map (x: {
+          type = "symlink";
+          permissions =
+            if x.executable
+            then "770"
+            else null;
+          inherit (x) source target clobber;
+        }))
+        (x: {
+          files = x;
+          version = 1;
+        })
+        builtins.toJSON
+        (pkgs.writeText "manifest.json")
+      ];
+    in
+      pkgs.writeTextFile {
+        name = "hjem-activation";
+        destination = "/activate";
+        executable = true;
+        text = ''
+          #! ${pkgs.runtimeShell}
+          export PATH='$PATH:${lib.makeBinPath [linker.packages.${pkgs.stdenv.system}.default]}"
+          smfh -v activate '${manifest}'
+        '';
+      };
+
     environment.loadEnv = let
       toEnv = env:
         if isList env
@@ -210,4 +247,5 @@ in {
       }
     ];
   };
+  _file = ./common.nix;
 }
