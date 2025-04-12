@@ -9,14 +9,14 @@
   ...
 }: let
   inherit (lib.attrsets) mapAttrsToList;
-  inherit (lib.lists) isList;
-  inherit (lib.strings) concatStringsSep;
+  inherit (lib.strings) concatMapStringsSep concatLines;
   inherit (lib.modules) mkIf mkDefault mkDerivedConfig;
-  inherit (lib.options) mkOption mkEnableOption literalExpression;
+  inherit (lib.options) mkOption literalExpression;
   inherit (lib.strings) hasPrefix;
   inherit (lib.types) bool submodule str path attrsOf nullOr lines listOf package oneOf int;
+  inherit (builtins) isList;
 
-  clobberOpt = config.clobberFiles;
+  cfg = config;
 
   fileType = relativeTo:
     submodule ({
@@ -45,7 +45,7 @@
             else "${config.relativeTo}/${p}";
           defaultText = "name";
           description = ''
-            Path to target file relative to ${config.relativeTo}.
+            Path to target file relative to {option}`hjem.users.<name>.files.<file>.relativeTo`.
           '';
         };
 
@@ -72,7 +72,7 @@
 
         clobber = mkOption {
           type = bool;
-          default = clobberOpt;
+          default = cfg.clobberFiles;
           defaultText = literalExpression "config.hjem.clobberByDefault";
           description = ''
             Whether to "clobber" existing target paths.
@@ -102,18 +102,6 @@
           }));
       };
     });
-
-  toEnv = env:
-    if isList env
-    then concatStringsSep ":" (map toString env)
-    else toString env;
-
-  mkEnvVars = vars: (concatStringsSep "\n"
-    (mapAttrsToList (name: value: "export ${name}=\"${toEnv value}\"") vars));
-
-  writeEnvScript = attrs:
-    pkgs.writeShellScript "load-env"
-    (mkEnvVars attrs);
 in {
   imports = [
     # Makes "assertions" option available without having to duplicate the work
@@ -122,7 +110,14 @@ in {
   ];
 
   options = {
-    enable = mkEnableOption "Whether to enable home management for this user" // {default = true;};
+    enable = mkOption {
+      type = bool;
+      default = false;
+      example = true;
+      description = ''
+        Whether to enable home management for this user.
+      '';
+    };
     user = mkOption {
       type = str;
       description = "The owner of a given home directory.";
@@ -151,7 +146,7 @@ in {
 
     files = mkOption {
       default = {};
-      type = attrsOf (fileType config.directory);
+      type = attrsOf (fileType cfg.directory);
       example = {".config/foo.txt".source = "Hello World";};
       description = "Files to be managed by Hjem";
     };
@@ -160,7 +155,7 @@ in {
       type = listOf package;
       default = [];
       example = literalExpression "[pkgs.hello]";
-      description = "Packages for ${config.user}";
+      description = "Packages to install for this user";
     };
 
     environment = {
@@ -192,14 +187,25 @@ in {
   };
 
   config = {
-    environment.loadEnv = mkIf (config.environment.sessionVariables != {}) (writeEnvScript config.environment.sessionVariables);
+    environment.loadEnv = let
+      toEnv = env:
+        if isList env
+        then concatMapStringsSep ":" toString env
+        else toString env;
+    in
+      lib.pipe cfg.environment.sessionVariables [
+        (mapAttrsToList (name: value: "export ${name}=\"${toEnv value}\""))
+        concatLines
+        (pkgs.writeShellScript "load-env")
+      ];
+
     assertions = [
       {
-        assertion = config.user != "";
+        assertion = cfg.user != "";
         message = "A user must be configured in 'hjem.users.<user>.name'";
       }
       {
-        assertion = config.directory != "";
+        assertion = cfg.directory != "";
         message = "A home directory must be configured in 'hjem.users.<user>.directory'";
       }
     ];
