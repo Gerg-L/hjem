@@ -8,7 +8,6 @@
   inherit (lib.options) mkOption literalExpression;
   inherit (lib.lists) filter map flatten concatLists;
   inherit (lib.attrsets) filterAttrs mapAttrs' attrValues mapAttrsToList;
-  inherit (lib.trivial) flip;
   inherit (lib.types) bool attrsOf submoduleWith listOf raw attrs;
 
   cfg = config.hjem;
@@ -107,16 +106,22 @@ in {
     }
 
     (mkIf (cfg.users != {}) {
-      warnings = flatten (flip mapAttrsToList cfg.users (user: config:
-        flip map config.warnings (
-          warning: "${user} profile: ${warning}"
-        )));
+      warnings = flatten (mapAttrsToList (
+          user: config:
+            map (
+              warning: "${user} profile: ${warning}"
+            )
+            config.warnings
+        )
+        cfg.users);
 
-      assertions = flatten (flip mapAttrsToList cfg.users (user: config:
-        flip map config.assertions (assertion: {
+      assertions = flatten (mapAttrsToList (user: config:
+        map (assertion: {
           inherit (assertion) assertion;
           message = "${user} profile: ${assertion.message}";
-        })));
+        })
+        config.assertions)
+      cfg.users);
     })
   ];
 }
